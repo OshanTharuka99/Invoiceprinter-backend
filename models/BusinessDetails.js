@@ -204,6 +204,13 @@ const businessDetailsSchema = new mongoose.Schema({
     rmaDividerColor: { type: String, default: '#c2410c' },
     rmaTerms: { type: String, trim: true, default: 'RMA processed as per company warranty / service policy.' },
     rmaNotes: { type: String, trim: true, default: '' },
+    cashReceiptPrefix: { type: String, default: 'CR', trim: true },
+    cashReceiptDigits: { type: Number, default: 5 },
+    cashReceiptTitleColor: { type: String, default: '#0f172a' },
+    cashReceiptDividerColor: { type: String, default: '#0f172a' },
+    cashReceiptLogo: { type: String, trim: true, default: '' },
+    cashReceiptTerms: { type: String, trim: true, default: '' },
+    cashReceiptNotes: { type: String, trim: true, default: '' },
     defaultWarrantyPeriod: { type: String, trim: true, default: '1 year' },
     // Page size configuration
     pageSizePreset: { type: String, default: 'A4' },

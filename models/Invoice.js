@@ -99,7 +99,6 @@ const invoiceSchema = new mongoose.Schema({
         editedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         editedAt: { type: Date, default: Date.now }
     }],
-    // Edit/cancellation audit trail
     deliveryNoteRef: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'DeliveryNote',
