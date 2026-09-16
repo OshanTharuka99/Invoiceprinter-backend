@@ -7,6 +7,11 @@ const cashReceiptSchema = new mongoose.Schema({
         unique: true,
         uppercase: true
     },
+    receiptType: {
+        type: String,
+        enum: ['payment', 'advance'],
+        default: 'payment'
+    },
     receiptDate: {
         type: Date,
         default: Date.now
@@ -52,6 +57,16 @@ const cashReceiptSchema = new mongoose.Schema({
         ref: 'Invoice',
         default: null
     },
+    appliedToInvoice: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Invoice',
+        default: null
+    },
+    appliedAmount: {
+        type: Number,
+        default: 0,
+        min: 0
+    },
     description: {
         type: String,
         trim: true,
@@ -76,6 +91,10 @@ const cashReceiptSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
         default: null
+    },
+    autoCreated: {
+        type: Boolean,
+        default: false
     }
 }, {
     timestamps: true

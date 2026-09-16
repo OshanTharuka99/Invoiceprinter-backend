@@ -87,6 +87,13 @@ const invoiceSchema = new mongoose.Schema({
     hasAdvancePayment: { type: Boolean, default: false },
     advanceAmount: { type: Number, default: 0, min: 0 },
     balanceDue: { type: Number, default: 0, min: 0 },
+    advanceReceipts: [{
+        receiptRef: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'CashReceipt'
+        },
+        amount: { type: Number, default: 0, min: 0 }
+    }],
     currency: { type: String, default: 'primary' },
     status: {
         type: String,

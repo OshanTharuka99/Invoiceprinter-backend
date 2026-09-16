@@ -10,6 +10,9 @@ router.route('/')
     .get(cashReceiptController.getCashReceipts)
     .post(cashReceiptController.createCashReceipt);
 
+router.route('/advances')
+    .get(cashReceiptController.getAdvanceReceipts);
+
 router.route('/:id')
     .get(cashReceiptController.getCashReceiptById)
     .delete(cashReceiptController.voidCashReceipt);

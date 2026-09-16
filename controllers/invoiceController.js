@@ -1,5 +1,6 @@
 const Invoice = require('../models/Invoice');
 const InvoiceDeleteRequest = require('../models/InvoiceDeleteRequest');
+const CashReceipt = require('../models/CashReceipt');
 const Notification = require('../models/Notification');
 const User = require('../models/User');
 const Product = require('../models/Product');
@@ -14,6 +15,7 @@ const {
     enrichItemsWithUnitCost,
     enrichItemsWithUnitCostFromDN,
 } = require('../utils/stockCost');
+const { generateReceiptNumber } = require('./cashReceiptController');
 
 const createNotification = async (recipientId, type, title, message, relatedId = null) => {
     try {
@@ -29,10 +31,46 @@ const createNotification = async (recipientId, type, title, message, relatedId =
     }
 };
 
-const resolveAdvancePayment = (finalTotal, hasAdvancePayment, advanceAmount) => {
+const validateAdvanceReceipts = async (advanceReceipts, projectId) => {
+    if (!advanceReceipts || advanceReceipts.length === 0) return { errors: [], receipts: [], sum: 0 };
+    const errors = [];
+    const receipts = [];
+    let sum = 0;
+
+    for (const item of advanceReceipts) {
+        const rid = item?.receiptRef;
+        if (!rid) { errors.push('Advance receipt reference is missing'); continue; }
+
+        const receipt = await CashReceipt.findById(rid);
+        if (!receipt) { errors.push('A selected advance cash receipt was not found'); continue; }
+        if (receipt.status !== 'issued') { errors.push(`Receipt ${receipt.receiptNumber || ''} is not issued (it is ${receipt.status})`); continue; }
+        if (receipt.appliedToInvoice) { errors.push(`Receipt ${receipt.receiptNumber || ''} is already applied to another invoice`); continue; }
+        if (String(receipt.projectRef || '') !== String(projectId)) { errors.push(`Receipt ${receipt.receiptNumber || ''} does not belong to the selected project`); continue; }
+
+        const amount = Number(item.amount);
+        if (!amount || amount <= 0) { errors.push(`Receipt ${receipt.receiptNumber || ''} has an invalid advance amount`); continue; }
+        sum += amount;
+        receipts.push({ receiptRef: rid, amount });
+    }
+
+    return { errors, receipts, sum };
+};
+
+const resolveAdvancePayment = async (finalTotal, hasAdvancePayment, advanceAmount, advanceReceipts = [], projectId = null) => {
     const total = Number(finalTotal) || 0;
     const hasAdvance = !!hasAdvancePayment;
-    const advance = hasAdvance ? Math.max(0, Number(advanceAmount) || 0) : 0;
+
+    let advance = hasAdvance ? Math.max(0, Number(advanceAmount) || 0) : 0;
+    let receipts = [];
+
+    if (hasAdvance && advanceReceipts && advanceReceipts.length > 0) {
+        const valid = await validateAdvanceReceipts(advanceReceipts, projectId);
+        if (valid.errors.length > 0) {
+            return { error: valid.errors.join('; ') };
+        }
+        advance = valid.sum;
+        receipts = valid.receipts;
+    }
 
     if (hasAdvance && advance <= 0) {
         return { error: 'Advance amount must be greater than zero when advance payment is selected' };
@@ -44,8 +82,85 @@ const resolveAdvancePayment = (finalTotal, hasAdvancePayment, advanceAmount) => 
     return {
         hasAdvancePayment: hasAdvance,
         advanceAmount: advance,
-        balanceDue: total - advance,
+        balanceDue: Math.max(0, total - advance),
+        advanceReceipts: receipts,
     };
+};
+
+// Mark advance cash receipts as consumed by an invoice
+const applyAdvanceReceipts = async (invoiceId, advanceReceipts) => {
+    for (const item of advanceReceipts || []) {
+        if (!item?.receiptRef) continue;
+        await CashReceipt.findByIdAndUpdate(item.receiptRef, {
+            appliedToInvoice: invoiceId,
+            appliedAmount: Number(item.amount) || 0
+        });
+    }
+};
+
+// Release advance cash receipts previously applied to an invoice (edit/delete)
+const releaseAdvanceReceipts = async (invoiceId) => {
+    await CashReceipt.updateMany(
+        { appliedToInvoice: invoiceId },
+        { $set: { appliedToInvoice: null, appliedAmount: 0 } }
+    );
+};
+
+// Auto-generate a payment cash receipt when an invoice is created (paid methods only).
+// The receipt's payment method mirrors the invoice's method, so dashboard method values
+// are sourced from cash receipts.
+const autoCreatePaymentReceipt = async (invoice, userId) => {
+    if (!['cash', 'cheque', 'bank_transfer'].includes(invoice.paymentMethod)) return null;
+    const amount = Number(invoice.balanceDue ?? invoice.finalTotal);
+    if (!amount || amount <= 0) return null;
+
+    const receiptNumber = await generateReceiptNumber();
+
+    return CashReceipt.create({
+        receiptNumber,
+        receiptType: 'payment',
+        receiptDate: invoice.invoiceDate || Date.now(),
+        clientRef: invoice.clientRef || null,
+        manualClientDetails: invoice.manualClientDetails || {},
+        amountReceived: amount,
+        paymentMethod: invoice.paymentMethod,
+        chequeNumber: '',
+        projectRef: invoice.projectId || null,
+        quotationRef: invoice.quotationRef || null,
+        invoiceRef: invoice._id,
+        appliedToInvoice: null,
+        appliedAmount: 0,
+        description: `Auto-generated payment for invoice ${invoice.invoiceNumber}`,
+        receivedBy: userId,
+        status: 'issued',
+        autoCreated: true
+    });
+};
+
+// Void auto-generated receipts when the linked invoice is cancelled or replaced
+const voidAutoReceiptForInvoice = async (invoiceId, userId, note) => {
+    await CashReceipt.updateMany(
+        { invoiceRef: invoiceId, autoCreated: true, status: 'issued' },
+        {
+            $set: {
+                status: 'void',
+                voidNote: note || 'Linked invoice cancelled',
+                voidedBy: userId
+            }
+        }
+    );
+};
+
+// Batch-compute how much each invoice has already received via issued payment receipts
+const computePaidAmounts = async (invoiceIds) => {
+    if (!invoiceIds || invoiceIds.length === 0) return {};
+    const agg = await CashReceipt.aggregate([
+        { $match: { invoiceRef: { $in: invoiceIds }, status: 'issued', receiptType: 'payment' } },
+        { $group: { _id: '$invoiceRef', total: { $sum: '$amountReceived' } } }
+    ]);
+    const map = {};
+    agg.forEach(a => { map[String(a._id)] = a.total; });
+    return map;
 };
 
 const resolveInitialStatus = (paymentMethod, status, balanceDue) => {
@@ -315,9 +430,22 @@ exports.getInvoices = async (req, res) => {
             .populate('statusHistory.editedBy', 'firstName lastName')
             .populate('items.productRef', 'name productId warrantyPeriod')
             .populate('deliveryNoteRef', 'deliveryNoteNumber')
+            .populate('advanceReceipts.receiptRef', 'receiptNumber receiptDate amountReceived paymentMethod receiptType status')
             .sort({ createdAt: -1 })
             .lean();
-        res.status(200).json({ success: true, data: invoices });
+
+        const paidMap = await computePaidAmounts(invoices.map(i => i._id));
+
+        const enriched = invoices.map(i => {
+            const paidAmount = paidMap[String(i._id)] || 0;
+            return {
+                ...i,
+                paidAmount,
+                outstandingBalance: Math.max(0, (i.balanceDue || i.finalTotal || 0) - paidAmount),
+            };
+        });
+
+        res.status(200).json({ success: true, data: enriched });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -348,7 +476,8 @@ exports.createInvoice = async (req, res) => {
             deliveryNoteRef,
             quotationRef,
             hasAdvancePayment,
-            advanceAmount
+            advanceAmount,
+            advanceReceipts
         } = req.body;
 
         if (!items || items.length === 0) {
@@ -427,7 +556,7 @@ exports.createInvoice = async (req, res) => {
         }
         const invoiceNumber = `${prefix}${sequence.toString().padStart(digits, '0')}`;
 
-        const advance = resolveAdvancePayment(finalTotal, hasAdvancePayment, advanceAmount);
+        const advance = await resolveAdvancePayment(finalTotal, hasAdvancePayment, advanceAmount, advanceReceipts, projectId);
         if (advance.error) {
             return res.status(400).json({ success: false, message: advance.error });
         }
@@ -468,6 +597,7 @@ exports.createInvoice = async (req, res) => {
             hasAdvancePayment: advance.hasAdvancePayment,
             advanceAmount: advance.advanceAmount,
             balanceDue: advance.balanceDue,
+            advanceReceipts: advance.advanceReceipts,
             currency: currency || 'primary',
             status: initialStatus,
             statusHistory: [{
@@ -483,6 +613,11 @@ exports.createInvoice = async (req, res) => {
         };
 
         const invoice = await Invoice.create(invoiceData);
+
+        await applyAdvanceReceipts(invoice._id, advance.advanceReceipts);
+
+        // Auto-create a payment cash receipt matching the invoice's payment method
+        await autoCreatePaymentReceipt(invoice, req.user._id);
 
         if (!isFromDN) {
             await applyStockDeductions(cleanedItems, creationMethod);
@@ -560,9 +695,17 @@ exports.getInvoiceById = async (req, res) => {
             .populate('createdBy', 'firstName lastName')
             .populate('statusHistory.editedBy', 'firstName lastName')
             .populate('items.productRef', 'name productId warrantyPeriod')
-            .populate('deliveryNoteRef', 'deliveryNoteNumber');
+            .populate('deliveryNoteRef', 'deliveryNoteNumber')
+            .populate('advanceReceipts.receiptRef', 'receiptNumber receiptDate amountReceived paymentMethod receiptType status');
         if (!invoice) return res.status(404).json({ success: false, message: 'Invoice not found' });
-        res.status(200).json({ success: true, data: invoice });
+
+        const paidMap = await computePaidAmounts([invoice._id]);
+        const paidAmount = paidMap[String(invoice._id)] || 0;
+        const doc = invoice.toObject();
+        doc.paidAmount = paidAmount;
+        doc.outstandingBalance = Math.max(0, (doc.balanceDue || doc.finalTotal || 0) - paidAmount);
+
+        res.status(200).json({ success: true, data: doc });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -654,7 +797,8 @@ exports.editInvoice = async (req, res) => {
             invoiceDate,
             editNote,
             hasAdvancePayment,
-            advanceAmount
+            advanceAmount,
+            advanceReceipts
         } = req.body;
 
         if (!items || items.length === 0) {
@@ -714,6 +858,9 @@ exports.editInvoice = async (req, res) => {
         });
         await originalInvoice.save();
 
+        // Release advance cash receipts attached to the original invoice so they can be reused
+        await releaseAdvanceReceipts(originalInvoice._id);
+
         // 5. Generate new invoice number
         const bizDetails = await BusinessDetails.findOne();
         const prefix = bizDetails?.invoicePrefix || 'INV';
@@ -732,7 +879,7 @@ exports.editInvoice = async (req, res) => {
         }
         const newInvoiceNumber = `${prefix}${sequence.toString().padStart(digits, '0')}`;
 
-        const advance = resolveAdvancePayment(finalTotal, hasAdvancePayment, advanceAmount);
+        const advance = await resolveAdvancePayment(finalTotal, hasAdvancePayment, advanceAmount, advanceReceipts, projectId);
         if (advance.error) {
             return res.status(400).json({ success: false, message: advance.error });
         }
@@ -776,6 +923,7 @@ exports.editInvoice = async (req, res) => {
             hasAdvancePayment: advance.hasAdvancePayment,
             advanceAmount: advance.advanceAmount,
             balanceDue: advance.balanceDue,
+            advanceReceipts: advance.advanceReceipts,
             currency: currency || 'primary',
             status: initialStatus,
             statusHistory: newHistory,
@@ -789,6 +937,13 @@ exports.editInvoice = async (req, res) => {
         if (!isFromDN) {
             await applyStockDeductions(items, method);
         }
+
+        // Apply advance cash receipts to the replacement invoice
+        await applyAdvanceReceipts(newInvoice._id, advance.advanceReceipts);
+
+        // Void the original invoice's auto-generated receipt and issue a new one
+        await voidAutoReceiptForInvoice(originalInvoice._id, req.user._id, `Replaced by edited invoice ${newInvoiceNumber}`);
+        await autoCreatePaymentReceipt(newInvoice, req.user._id);
 
         // 8. Update project value
         if (projectId) {
@@ -883,6 +1038,19 @@ exports.deleteInvoice = async (req, res) => {
             editedAt: Date.now()
         });
         await invoice.save();
+
+        // Release advance cash receipts applied to this invoice
+        await releaseAdvanceReceipts(invoice._id);
+
+        // Void auto-generated payment receipt for this invoice
+        await voidAutoReceiptForInvoice(invoice._id, req.user._id, 'Linked invoice cancelled');
+
+        // Reverse the project revenue contribution
+        if (invoice.projectId) {
+            await Project.findByIdAndUpdate(invoice.projectId, {
+                $inc: { value: -(invoice.finalTotal || 0) }
+            });
+        }
 
         await InvoiceDeleteRequest.deleteMany({ invoice: req.params.id });
 
@@ -1098,6 +1266,19 @@ exports.approveDeleteRequest = async (req, res) => {
             editedAt: Date.now()
         });
         await invoice.save();
+
+        // Release advance cash receipts applied to this invoice
+        await releaseAdvanceReceipts(invoice._id);
+
+        // Void auto-generated payment receipt for this invoice
+        await voidAutoReceiptForInvoice(invoice._id, req.user._id, 'Linked invoice cancelled');
+
+        // Reverse the project revenue contribution
+        if (invoice.projectId) {
+            await Project.findByIdAndUpdate(invoice.projectId, {
+                $inc: { value: -(invoice.finalTotal || 0) }
+            });
+        }
 
         request.status = 'Approved';
         request.reviewedBy = req.user._id;
