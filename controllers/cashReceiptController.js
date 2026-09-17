@@ -12,21 +12,23 @@ const RECEIPT_DIGITS = 5;
 
 const generateReceiptNumber = async () => {
     const bizDetails = await BusinessDetails.findOne();
-    const prefix = bizDetails?.cashReceiptPrefix || RECEIPT_PREFIX;
+    const orgCode = String(bizDetails?.organizationCode || '').trim().toUpperCase() || 'ORG';
+    const prefix = String(bizDetails?.cashReceiptPrefix || RECEIPT_PREFIX).toUpperCase();
     const digits = bizDetails?.cashReceiptDigits || RECEIPT_DIGITS;
 
-    const escapedPrefix = String(prefix).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const fullPrefix = `${orgCode}/${prefix}/`;
+    const escapedPrefix = fullPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const latest = await CashReceipt.findOne({
         receiptNumber: new RegExp('^' + escapedPrefix)
     }).sort({ createdAt: -1 });
 
     let sequence = 1;
     if (latest && latest.receiptNumber) {
-        const suffixStr = latest.receiptNumber.substring(String(prefix).length);
+        const suffixStr = latest.receiptNumber.substring(fullPrefix.length);
         const num = parseInt(suffixStr, 10);
         if (!isNaN(num)) sequence = num + 1;
     }
-    return `${prefix}${String(sequence).padStart(digits, '0')}`;
+    return `${fullPrefix}${String(sequence).padStart(digits, '0')}`;
 };
 
 module.exports.generateReceiptNumber = generateReceiptNumber;
