@@ -211,6 +211,18 @@ const businessDetailsSchema = new mongoose.Schema({
     cashReceiptLogo: { type: String, trim: true, default: '' },
     cashReceiptTerms: { type: String, trim: true, default: '' },
     cashReceiptNotes: { type: String, trim: true, default: '' },
+    expensePrefix: { type: String, default: 'EXP', trim: true },
+    expenseDigits: { type: Number, default: 5 },
+    expenseTitleColor: { type: String, default: '#0f172a' },
+    expenseDividerColor: { type: String, default: '#0f172a' },
+    expenseTerms: { type: String, trim: true, default: '' },
+    expenseNotes: { type: String, trim: true, default: '' },
+    expenseCategories: [{
+        key: { type: String, trim: true, default: '' },
+        name: { type: String, required: true, trim: true },
+        isDefault: { type: Boolean, default: false },
+        isActive: { type: Boolean, default: true }
+    }],
     defaultWarrantyPeriod: { type: String, trim: true, default: '1 year' },
     // Page size configuration
     pageSizePreset: { type: String, default: 'A4' },

@@ -9,13 +9,14 @@ const auditLogSchema = new mongoose.Schema({
             'PRODUCT_EDIT', 'CATEGORY_EDIT',
             'WARRANTY_SERIAL_EDIT', 'WARRANTY_VOIDED',
             'INVENTORY_REQUEST_APPROVED', 'INVENTORY_REQUEST_REJECTED',
-            'RMA_CREATED', 'RMA_REPLACE', 'FAULTY_STOCK_ADDED', 'FAULTY_REMOVED', 'STOCK_LOSS_WRITEOFF'
+            'RMA_CREATED', 'RMA_REPLACE', 'FAULTY_STOCK_ADDED', 'FAULTY_REMOVED', 'STOCK_LOSS_WRITEOFF',
+            'SUPPLIER_CREDIT_PAYMENT'
         ]
     },
     targetType: {
         type: String,
         required: true,
-        enum: ['StockEntry', 'Product', 'Category', 'Warranty', 'RmaJob', 'FaultyDevice']
+        enum: ['StockEntry', 'Product', 'Category', 'Warranty', 'RmaJob', 'FaultyDevice', 'Supplier']
     },
     targetId: {
         type: mongoose.Schema.Types.ObjectId,

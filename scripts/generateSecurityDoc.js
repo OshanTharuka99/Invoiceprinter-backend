@@ -204,7 +204,7 @@ const generate = () => {
         ['JWT_EXPIRES_IN', 'Token/cookie expiry', '7d'],
         ['CLIENT_URL', 'Frontend origin for CORS & CSP', 'http://localhost:3001'],
         ['NODE_ENV', 'production enables HSTS & secure cookies', 'production'],
-        ['PORT', 'API server port', '5000'],
+        ['PORT', 'API server port', '4000'],
     ]);
 
     drawSectionTitle(doc, '5. Testing Checklist');

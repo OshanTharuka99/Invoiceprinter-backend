@@ -5,6 +5,7 @@
   "scripts": {
     "start": "nodemon -L server.js",
     "dev": "nodemon server.js",
+    "generate:manual": "node scripts/generateUserManualPdf.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

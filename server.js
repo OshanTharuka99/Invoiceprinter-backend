@@ -6,7 +6,7 @@ const securityMiddleware = require('./middleware/security');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 4000;
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3001';
 
 // Security headers (Helmet)
@@ -41,6 +41,7 @@ const rmaRoutes = require('./routes/rmaRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
 const promaInvoiceRoutes = require('./routes/promaInvoiceRoutes');
 const cashReceiptRoutes = require('./routes/cashReceiptRoutes');
+const expenseRoutes = require('./routes/expenseRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
@@ -61,6 +62,7 @@ app.use('/api/rma', rmaRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/proma-invoices', promaInvoiceRoutes);
 app.use('/api/cash-receipts', cashReceiptRoutes);
+app.use('/api/expenses', expenseRoutes);
 
 app.get('/', (req, res) => {
     res.send('Invoice Printer API is running...');

@@ -7,6 +7,7 @@ const Supplier = require('../models/Supplier');
 const Category = require('../models/Category');
 const StockEntry = require('../models/StockEntry');
 const GoodsReturnNote = require('../models/GoodsReturnNote');
+const Expense = require('../models/Expense');
 
 const MIGRATABLE_FIELDS = [
     { model: Client, field: 'clientId' },
@@ -16,6 +17,7 @@ const MIGRATABLE_FIELDS = [
     { model: Category, field: 'code' },
     { model: StockEntry, field: 'batchRef' },
     { model: GoodsReturnNote, field: 'batchRef' },
+    { model: Expense, field: 'expenseNumber' },
 ];
 
 const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -79,6 +81,7 @@ const CANONICAL_FIELDS = [
     { model: Project, field: 'projectId' },
     { model: Supplier, field: 'supplierId' },
     { model: Category, field: 'code' },
+    { model: Expense, field: 'expenseNumber' },
 ];
 
 /**

@@ -7,10 +7,12 @@ const Quotation = require('../models/Quotation');
 const Warranty = require('../models/Warranty');
 const Invoice = require('../models/Invoice');
 const CashReceipt = require('../models/CashReceipt');
+const Expense = require('../models/Expense');
 const SalesReturnNote = require('../models/SalesReturnNote');
 const PurchaseOrder = require('../models/PurchaseOrder');
 const RmaJob = require('../models/RmaJob');
 const BusinessDetails = require('../models/BusinessDetails');
+const { buildStockCreditAlerts, notifyStockCreditExpiry } = require('../utils/stockCreditNotifications');
 
 const emptyRmaByStatus = () => ({
     Open: 0,
@@ -261,6 +263,83 @@ const buildInvoicePeriodStats = async (period) => {
     };
 };
 
+const buildExpensePeriodStats = async (period) => {
+    const now = new Date();
+    let start;
+    let end;
+    let dateFormat;
+
+    switch (period) {
+        case 'daily':
+            start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+            dateFormat = '%Y-%m-%d';
+            break;
+        case 'monthly':
+            start = new Date(now.getFullYear(), now.getMonth(), 1);
+            end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+            dateFormat = '%Y-%m-%d';
+            break;
+        default:
+            start = new Date(now.getFullYear(), 0, 1);
+            end = new Date(now.getFullYear() + 1, 0, 1);
+            dateFormat = '%Y-%m';
+            break;
+    }
+
+    const match = { expenseDate: { $gte: start, $lt: end }, status: { $ne: 'void' } };
+
+    const [totalAgg, purposeAgg, paymentAgg, categoryAgg, overTimeAgg] = await Promise.all([
+        Expense.aggregate([
+            { $match: match },
+            { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
+        ]),
+        Expense.aggregate([
+            { $match: match },
+            { $group: { _id: '$purpose', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+        ]),
+        Expense.aggregate([
+            { $match: match },
+            { $group: { _id: '$paymentMethod', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+        ]),
+        Expense.aggregate([
+            { $match: match },
+            { $group: { _id: '$categoryName', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+            { $sort: { total: -1 } },
+        ]),
+        Expense.aggregate([
+            { $match: match },
+            {
+                $group: {
+                    _id: { $dateToString: { format: dateFormat, date: '$expenseDate' } },
+                    total: { $sum: '$amount' },
+                    count: { $sum: 1 },
+                },
+            },
+            { $sort: { _id: 1 } },
+        ]),
+    ]);
+
+    const byPurpose = { project: 0, office: 0, asset: 0 };
+    purposeAgg.forEach((row) => {
+        if (row._id && byPurpose[row._id] !== undefined) byPurpose[row._id] = row.total || 0;
+    });
+
+    const byPaymentMethod = { cash: 0, cheque: 0, bank_transfer: 0 };
+    paymentAgg.forEach((row) => {
+        if (row._id && byPaymentMethod[row._id] !== undefined) byPaymentMethod[row._id] = row.total || 0;
+    });
+
+    return {
+        totalExpenses: totalAgg[0]?.total || 0,
+        expenseCount: totalAgg[0]?.count || 0,
+        byPurpose,
+        byPaymentMethod,
+        byCategory: categoryAgg.map((row) => ({ name: row._id || 'Uncategorized', total: row.total || 0, count: row.count || 0 })),
+        expensesOverTime: overTimeAgg.map((row) => ({ date: row._id, total: row.total || 0 })),
+    };
+};
+
 const buildUserWorkspace = async (userId) => {
     const myMatch = { createdBy: userId };
     const activeMy = { ...myMatch, status: { $ne: 'Cancelled' } };
@@ -390,6 +469,12 @@ exports.getDashboardStats = async (req, res) => {
         const userId = req.user._id;
         const isUser = req.user.role === 'user';
 
+        if (!isUser) {
+            await notifyStockCreditExpiry(now).catch((err) => {
+                console.error('Stock credit notification error:', err);
+            });
+        }
+
         const [
             users,
             clients,
@@ -401,6 +486,8 @@ exports.getDashboardStats = async (req, res) => {
             warrantyActive,
             warrantyExpired,
             invoiceStats,
+            expenseStats,
+            stockCreditAlerts,
             rmaAgg,
             business,
             userWorkspace,
@@ -420,6 +507,8 @@ exports.getDashboardStats = async (req, res) => {
                 ],
             }),
             isUser ? Promise.resolve(null) : buildInvoicePeriodStats(period),
+            isUser ? Promise.resolve(null) : buildExpensePeriodStats(period),
+            isUser ? Promise.resolve([]) : buildStockCreditAlerts(now),
             RmaJob.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
             BusinessDetails.findOne().select('businessName primaryCurrency logo quotationLogo').lean(),
             isUser ? buildUserWorkspace(userId) : Promise.resolve(null),
@@ -445,6 +534,8 @@ exports.getDashboardStats = async (req, res) => {
                     myPurchaseOrders: userWorkspace?.purchaseOrders?.total ?? null,
                 },
                 invoices: invoiceStats,
+                expenses: expenseStats,
+                stockCreditAlerts,
                 rmaByStatus: tallyRma(rmaAgg),
                 business: business || null,
                 userWorkspace,

@@ -53,9 +53,9 @@ const stockEntrySchema = new mongoose.Schema(
         },
         supplierInvoiceNumber: {
             type: String,
+            required: [true, 'Supplier invoice number is required'],
             trim: true,
             uppercase: true,
-            default: '',
             index: true,
         },
         supplierDeliveryNumber: {
@@ -68,6 +68,43 @@ const stockEntrySchema = new mongoose.Schema(
         notes: {
             type: String,
             trim: true,
+            default: '',
+        },
+        acquisitionType: {
+            type: String,
+            enum: ['cash', 'credit', 'advance'],
+            default: 'cash',
+        },
+        advanceAmount: {
+            type: Number,
+            min: [0, 'Advance amount cannot be negative'],
+            default: 0,
+        },
+        creditAmount: {
+            type: Number,
+            min: [0, 'Credit amount cannot be negative'],
+            default: 0,
+        },
+        creditPeriod: {
+            type: String,
+            default: '',
+        },
+        creditDueDate: {
+            type: Date,
+            default: null,
+            index: true,
+        },
+        creditExpiryNotifiedAt: {
+            type: Date,
+            default: null,
+        },
+        expenseRef: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'Expense',
+            default: null,
+        },
+        expenseNumber: {
+            type: String,
             default: '',
         },
         addedBy: {
