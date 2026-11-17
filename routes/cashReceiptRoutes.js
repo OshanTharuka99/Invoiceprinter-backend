@@ -15,6 +15,7 @@ router.route('/advances')
 
 router.route('/:id')
     .get(cashReceiptController.getCashReceiptById)
+    .put(cashReceiptController.updateCashReceipt)
     .delete(cashReceiptController.voidCashReceipt);
 
 module.exports = router;

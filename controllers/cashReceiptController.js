@@ -9,6 +9,34 @@ require('../models/User');
 
 const RECEIPT_PREFIX = 'CR';
 const RECEIPT_DIGITS = 5;
+const EDIT_WINDOW_DAYS = 14;
+
+const isWithinEditWindow = (createdAt) => {
+    const diffMs = Date.now() - new Date(createdAt).getTime();
+    return diffMs <= EDIT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+};
+
+const recomputeInvoicePaymentStatus = async (invoiceId, userId) => {
+    const invoice = await Invoice.findById(invoiceId);
+    if (!invoice || invoice.status === 'Cancelled') return;
+    const paidAgg = await CashReceipt.aggregate([
+        { $match: { invoiceRef: invoice._id, status: 'issued', receiptType: 'payment' } },
+        { $group: { _id: null, total: { $sum: '$amountReceived' } } },
+    ]);
+    const paid = paidAgg[0]?.total || 0;
+    const balanceDue = Number(invoice.balanceDue ?? invoice.finalTotal) || 0;
+    const next = paid >= balanceDue ? 'Paid' : 'Unpaid';
+    if (invoice.status !== next) {
+        invoice.status = next;
+        invoice.statusHistory.push({
+            status: next,
+            note: `Auto-updated after editing cash receipt. Outstanding: Rs. ${Math.max(0, balanceDue - paid).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+            editedBy: userId,
+            editedAt: Date.now()
+        });
+        await invoice.save();
+    }
+};
 
 const generateReceiptNumber = async () => {
     const bizDetails = await BusinessDetails.findOne();
@@ -242,6 +270,150 @@ exports.createCashReceipt = async (req, res) => {
     }
 };
 
+exports.updateCashReceipt = async (req, res) => {
+    try {
+        const receipt = await CashReceipt.findById(req.params.id);
+        if (!receipt) return res.status(404).json({ success: false, message: 'Cash receipt not found' });
+        if (receipt.status === 'void') {
+            return res.status(400).json({ success: false, message: 'A voided receipt cannot be edited' });
+        }
+        if (!isWithinEditWindow(receipt.createdAt)) {
+            return res.status(400).json({
+                success: false,
+                message: `Editing is only allowed within ${EDIT_WINDOW_DAYS} days of creating the receipt`
+            });
+        }
+        if (receipt.autoCreated) {
+            return res.status(400).json({
+                success: false,
+                message: 'Auto-created receipts are managed by their invoice and cannot be edited. Void or edit the linked invoice instead.'
+            });
+        }
+        if (receipt.appliedToInvoice) {
+            return res.status(400).json({
+                success: false,
+                message: 'This advance receipt is already applied to an invoice and cannot be edited. Void the linked invoice first.'
+            });
+        }
+
+        const {
+            receiptDate,
+            clientRef,
+            manualClientDetails,
+            amountReceived,
+            paymentMethod,
+            projectRef,
+            quotationRef,
+            invoiceRef,
+            chequeNumber,
+            description,
+            receiptType
+        } = req.body;
+
+        const amount = Number(amountReceived);
+        if (!amount || amount <= 0) {
+            return res.status(400).json({ success: false, message: 'Amount received must be greater than zero' });
+        }
+
+        const type = receiptType === 'advance' ? 'advance' : 'payment';
+        if (type === 'advance') {
+            if (!projectRef) {
+                return res.status(400).json({ success: false, message: 'An advance receipt must be linked to a project' });
+            }
+            if (invoiceRef) {
+                return res.status(400).json({ success: false, message: 'An advance receipt cannot be linked to an invoice' });
+            }
+        }
+
+        let invoiceId = type === 'payment' && invoiceRef ? invoiceRef : null;
+        const oldInvoiceId = receipt.invoiceRef;
+
+        // Invoice-linked payment: cap at the outstanding balance (excluding this receipt's own current amount)
+        if (invoiceId) {
+            const invoice = await Invoice.findById(invoiceId);
+            if (!invoice) {
+                return res.status(400).json({ success: false, message: 'Linked invoice not found' });
+            }
+            if (invoice.status === 'Cancelled') {
+                return res.status(400).json({ success: false, message: 'Cannot receive payment for a cancelled invoice' });
+            }
+
+            const paidAgg = await CashReceipt.aggregate([
+                { $match: { invoiceRef: invoice._id, status: 'issued', receiptType: 'payment', _id: { $ne: receipt._id } } },
+                { $group: { _id: null, total: { $sum: '$amountReceived' } } }
+            ]);
+            const alreadyPaid = paidAgg[0]?.total || 0;
+            const balanceDue = Number(invoice.balanceDue ?? invoice.finalTotal) || 0;
+            const invoiceOutstanding = Math.max(0, balanceDue - alreadyPaid);
+
+            if (amount > invoiceOutstanding) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Amount cannot exceed the invoice outstanding balance of Rs. ${invoiceOutstanding.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                });
+            }
+        }
+
+        // Project-only payment (no specific invoice): cap at project outstanding credit
+        if (type === 'payment' && projectRef && !invoiceRef) {
+            const fin = await computeProjectFinancials(projectRef);
+            const credit = fin.creditValue;
+            const selfAmount = receipt.receiptType === 'payment' && !receipt.invoiceRef
+                ? (Number(receipt.amountReceived) || 0)
+                : 0;
+            const cap = credit + selfAmount;
+            if (credit > 0 && amount > cap) {
+                return res.status(400).json({
+                    success: false,
+                    message: `Amount cannot exceed the project's outstanding credit of Rs. ${cap.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                });
+            }
+        }
+
+        const manual = manualClientDetails || {};
+        const hasClient = !!clientRef || !!(manual.name || manual.organization);
+        if (!hasClient) {
+            return res.status(400).json({ success: false, message: 'Please select a client or provide a manual client name' });
+        }
+
+        receipt.receiptType = type;
+        if (receiptDate) receipt.receiptDate = receiptDate;
+        receipt.clientRef = clientRef || null;
+        receipt.manualClientDetails = {
+            organization: manual.organization || '',
+            name: manual.name || '',
+            telephoneNumber: manual.telephoneNumber || '',
+            address: manual.address || ''
+        };
+        receipt.amountReceived = amount;
+        receipt.paymentMethod = paymentMethod || receipt.paymentMethod;
+        receipt.chequeNumber = (paymentMethod === 'cheque' ? (chequeNumber || '') : '');
+        receipt.projectRef = projectRef || null;
+        receipt.quotationRef = quotationRef || null;
+        receipt.invoiceRef = invoiceId;
+        receipt.description = description || '';
+
+        await receipt.save();
+
+        // Refresh the payment status of any affected invoices (old and new)
+        const affectedIds = new Set(
+            [oldInvoiceId, invoiceId].filter(Boolean).map((id) => String(id))
+        );
+        for (const id of affectedIds) {
+            await recomputeInvoicePaymentStatus(id, req.user._id);
+        }
+
+        const populated = await CashReceipt.findById(receipt._id)
+            .populate('clientRef', 'firstName lastName organization clientId')
+            .populate('receivedBy', 'firstName lastName')
+            .lean();
+
+        res.status(200).json({ success: true, message: 'Cash receipt updated successfully', data: populated });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+};
+
 exports.voidCashReceipt = async (req, res) => {
     try {
         const { reason } = req.body;
@@ -251,6 +423,12 @@ exports.voidCashReceipt = async (req, res) => {
 
         const receipt = await CashReceipt.findById(req.params.id);
         if (!receipt) return res.status(404).json({ success: false, message: 'Cash receipt not found' });
+        if (!isWithinEditWindow(receipt.createdAt)) {
+            return res.status(400).json({
+                success: false,
+                message: `Voiding is only allowed within ${EDIT_WINDOW_DAYS} days of creating the receipt`
+            });
+        }
         if (receipt.status === 'void') {
             return res.status(400).json({ success: false, message: 'Cash receipt is already void' });
         }
